@@ -1,0 +1,58 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Noto Sans SC", "Source Han Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "SimSun", "STSong", serif;
+  --font-kai: "KaiTi", "STKaiti", serif;
+  
+  --color-primary: #003629;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #1b4d3e;
+  --color-on-primary-container: #8abda9;
+  
+  --color-secondary: #625e55;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #e8e2d6;
+  --color-on-secondary-container: #68645b;
+  
+  --color-tertiary: #1c3327;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #324a3c;
+  --color-on-tertiary-container: #9eb9a7;
+  
+  --color-background: #fcf9f8;
+  --color-on-background: #1b1c1c;
+  
+  --color-surface: #fcf9f8;
+  --color-on-surface: #1b1c1c;
+  --color-surface-variant: #e4e2e1;
+  --color-on-surface-variant: #404945;
+  
+  --color-outline: #707974;
+  --color-outline-variant: #c0c9c3;
+
+  /* Custom shadows */
+  --shadow-premium: 0 1px 2px rgba(27,77,62,0.05), 0 8px 24px rgba(27,77,62,0.04);
+  --shadow-ambient: 0 4px 20px rgba(27, 77, 62, 0.05), 0 1px 3px rgba(27, 77, 62, 0.1);
+}
+
+@layer base {
+  body {
+    @apply bg-background text-on-background antialiased;
+    background-image: linear-gradient(to bottom, #fcf9f8, #f6f3f2);
+    min-height: 100vh;
+  }
+}
+
+.progress-glow {
+  box-shadow: 0 0 8px rgba(27,77,62,0.2);
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
