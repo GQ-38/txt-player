@@ -51,7 +51,7 @@ export function ReadingView() {
   const [showActionMenu, setShowActionMenu] = useState(false);
 
   const [fontSize, setFontSize] = useState(18);
-  const [lineHeight, setLineHeight] = useState(1.8);
+  const [lineHeight, setLineHeight] = useState(1.9);
   const [fontFamily, setFontFamily] = useState<'font-sans' | 'font-serif' | 'font-kai'>('font-sans');
   const [scrollMode, setScrollMode] = useState<'vertical' | 'horizontal'>('vertical');
   const [isAutoScroll, setIsAutoScroll] = useState(false);
@@ -141,21 +141,6 @@ export function ReadingView() {
       return;
     }
     fn?.();
-  };
-
-  const handleProgressInteraction = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!progressRef.current || paragraphs.length === 0) return;
-
-    const rect = progressRef.current.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const newIdx = Math.floor(pos * Math.max(1, paragraphs.length - 1));
-
-    setActiveParagraphIdx(newIdx);
-
-    if (isPlaying && !isMobileTtsMode) {
-      playParagraph(newIdx);
-    }
   };
 
   const book = books.find((b) => b.id === id);
@@ -297,7 +282,7 @@ export function ReadingView() {
   useEffect(() => {
     if (!book) return;
     setTtsState({ paragraphs, bookId: book.id });
-  }, [safeChapterIndex, book, paragraphs, setTtsState]);
+  }, [book, paragraphs, safeChapterIndex, setTtsState]);
 
   useEffect(() => {
     ttsRateRef.current = ttsRateState;
@@ -442,10 +427,21 @@ export function ReadingView() {
 
     const loadVoices = () => {
       try {
-        const v = synth.getVoices().filter((voice) => voice.lang.includes('zh'));
-        setVoices(v);
-        if (v.length > 0 && !selectedVoice) {
-          setSelectedVoice(v[0].name);
+        const allVoices = synth.getVoices();
+        const zhVoices = allVoices.filter((voice) => /zh|cmn/i.test(voice.lang || ''));
+        const usable = zhVoices.length > 0 ? zhVoices : allVoices;
+
+        setVoices(usable);
+
+        if (usable.length > 0 && !selectedVoice) {
+          const defaultVoice =
+            usable.find((v) => v.default) ||
+            usable.find((v) => /zh|cmn/i.test(v.lang || '')) ||
+            usable[0];
+
+          if (defaultVoice) {
+            setSelectedVoice(defaultVoice.name);
+          }
         }
       } catch (e) {
         console.error('loadVoices error:', e);
@@ -465,6 +461,46 @@ export function ReadingView() {
     };
   }, [canUseDesktopTts, selectedVoice, setSelectedVoice]);
 
+  const stopTTS = () => {
+    const synth = synthRef.current;
+    if (!synth) return;
+    try {
+      synth.cancel();
+    } catch { }
+    utteranceRef.current = null;
+    setTtsState({
+      isPlaying: false,
+      activeParagraphIdx: 0,
+    });
+  };
+
+  const pauseTTS = () => {
+    const synth = synthRef.current;
+    if (!synth) return;
+    try {
+      synth.pause();
+      setIsPlaying(false);
+    } catch (e) {
+      console.error('TTS pause error:', e);
+    }
+  };
+
+  const resumeTTS = () => {
+    const synth = synthRef.current;
+    if (!synth) return;
+    try {
+      if (synth.paused) {
+        synth.resume();
+      } else if (!synth.speaking) {
+        playParagraph(activeParagraphIdx);
+      }
+      setIsPlaying(true);
+    } catch (e) {
+      console.error('TTS resume error:', e);
+      setIsPlaying(false);
+    }
+  };
+
   const playParagraph = (idx: number) => {
     const synth = synthRef.current;
     if (!synth || !canUseDesktopTts) return;
@@ -483,15 +519,26 @@ export function ReadingView() {
     }
 
     u.rate = ttsRateRef.current;
-    u.pitch = 1.0;
+    u.pitch = 1;
+    u.volume = 1;
+
+    u.onstart = () => {
+      setTtsState({
+        isPlaying: true,
+        activeParagraphIdx: idx,
+        bookId: book.id,
+      });
+    };
 
     u.onend = () => {
-      const current = synthRef.current;
-      if (!current || !canUseDesktopTts) return;
-
       if (ttsState.isPlaying) {
-        setActiveParagraphIdx(idx + 1);
-        playParagraph(idx + 1);
+        const nextIdx = idx + 1;
+        if (nextIdx < paragraphs.length) {
+          setActiveParagraphIdx(nextIdx);
+          playParagraph(nextIdx);
+        } else {
+          setIsPlaying(false);
+        }
       }
     };
 
@@ -513,36 +560,6 @@ export function ReadingView() {
   };
 
   useEffect(() => {
-    const synth = synthRef.current;
-    if (!synth || !canUseDesktopTts) return;
-
-    try {
-      if (isPlaying) {
-        if (synth.paused) {
-          synth.resume();
-        } else if (!synth.speaking) {
-          playParagraph(activeParagraphIdx);
-        }
-      } else {
-        synth.pause();
-      }
-    } catch (e) {
-      console.error('TTS play/pause error:', e);
-      setIsPlaying(false);
-    }
-  }, [isPlaying, activeParagraphIdx, canUseDesktopTts]);
-
-  useEffect(() => {
-    if (ttsTimerMinutes > 0 && isPlaying) {
-      const timer = setTimeout(() => {
-        setIsPlaying(false);
-        setTtsTimerMinutes(0);
-      }, ttsTimerMinutes * 60 * 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [ttsTimerMinutes, isPlaying]);
-
-  useEffect(() => {
     return () => {
       const synth = synthRef.current;
       if (!synth) return;
@@ -552,16 +569,62 @@ export function ReadingView() {
     };
   }, []);
 
+  useEffect(() => {
+    if (ttsTimerMinutes > 0 && isPlaying) {
+      const timer = setTimeout(() => {
+        stopTTS();
+        setTtsTimerMinutes(0);
+      }, ttsTimerMinutes * 60 * 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [ttsTimerMinutes, isPlaying]);
+
   const toggleIsPlaying = () => {
     if (isMobileTtsMode) {
       showMobileTtsNotice();
       return;
     }
-    setIsPlaying(!isPlaying);
+
+    const synth = synthRef.current;
+    if (!synth || !canUseDesktopTts) {
+      alert('当前浏览器暂不支持听书。');
+      return;
+    }
+
+    if (isPlaying) {
+      pauseTTS();
+    } else {
+      if (synth.paused) {
+        resumeTTS();
+      } else {
+        playParagraph(activeParagraphIdx || 0);
+      }
+    }
   };
 
-  const increaseFontSize = () => setFontSize((prev) => Math.min(prev + 2, 36));
-  const decreaseFontSize = () => setFontSize((prev) => Math.max(prev - 2, 12));
+  const handleProgressInteraction = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!progressRef.current || paragraphs.length === 0) return;
+
+    const rect = progressRef.current.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const newIdx = Math.floor(pos * Math.max(1, paragraphs.length - 1));
+
+    setActiveParagraphIdx(newIdx);
+
+    if (isPlaying && !isMobileTtsMode) {
+      playParagraph(newIdx);
+    }
+  };
+
+  const increaseFontSize = () => setFontSize((prev) => Math.min(prev + 2, 32));
+  const decreaseFontSize = () => setFontSize((prev) => Math.max(prev - 2, 14));
+
+  const safeTitle = (value?: string) =>
+    (value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80);
 
   return (
     <div className={`fixed inset-0 z-50 flex flex-col overflow-hidden transition-colors duration-500 ${bgColor}`}>
@@ -571,14 +634,14 @@ export function ReadingView() {
             initial={{ y: '-100%' }}
             animate={{ y: 0 }}
             exit={{ y: '-100%' }}
-            className={`absolute left-0 right-0 top-0 z-10 flex h-16 items-center justify-between bg-gradient-to-b from-black/5 to-transparent px-6 ${textColor}`}
+            className={`absolute left-0 right-0 top-0 z-10 flex h-16 items-center justify-between bg-gradient-to-b from-black/5 to-transparent px-4 sm:px-6 ${textColor}`}
           >
             <button onClick={() => navigate('/')} className="rounded-full p-2 transition-colors hover:bg-black/5">
               <ArrowLeft size={24} />
             </button>
 
-            <span className="line-clamp-1 flex-1 px-4 text-center text-sm font-bold uppercase tracking-widest opacity-60">
-              {book.format === 'TXT' || book.format === 'MD' ? book.title : '正在阅读'}
+            <span className="line-clamp-1 flex-1 px-3 text-center text-sm font-bold uppercase tracking-widest opacity-60">
+              {book.format === 'TXT' || book.format === 'MD' ? safeTitle(book.title) : '正在阅读'}
             </span>
 
             <div className="relative">
@@ -657,9 +720,9 @@ export function ReadingView() {
 
       <main
         ref={scrollContainerRef}
-        className={`hide-scrollbar w-full flex-1 ${scrollMode === 'horizontal'
-            ? 'overflow-x-hidden whitespace-nowrap px-6 pb-8 pt-8'
-            : 'flex flex-col items-center overflow-y-auto px-6 pb-32 pt-16'
+        className={`hide-scrollbar w-full flex-1 overscroll-contain ${scrollMode === 'horizontal'
+            ? 'overflow-x-hidden whitespace-nowrap px-4 pb-28 pt-6 sm:px-6'
+            : 'overflow-y-auto px-4 pb-28 pt-14 sm:px-6'
           }`}
         onClick={handleArticleClick}
         onTouchStart={handleTouchStart}
@@ -675,77 +738,78 @@ export function ReadingView() {
           </div>
         )}
 
-        <article
-          ref={articleRef}
-          className={`${scrollMode === 'vertical' ? 'flex w-full max-w-2xl flex-col gap-6' : ''} ${textColor} ${fontFamily}`}
-          style={{
-            fontSize: `${fontSize}px`,
-            columnWidth: scrollMode === 'horizontal' ? '100vw' : 'auto',
-            columnGap: scrollMode === 'horizontal' ? '48px' : 'normal',
-            height: scrollMode === 'horizontal' ? '100%' : 'auto',
-          }}
-        >
-          {scrollMode === 'vertical' && (
-            <header className="mb-4 mt-12 text-center">
-              <h1 className="mb-4 text-2xl font-bold">{currentChapter?.title || book.title}</h1>
-              <div className="mx-auto h-px w-16 bg-primary/20" />
-            </header>
-          )}
-
-          <div
-            className="space-y-6 whitespace-pre-wrap text-justify leading-relaxed opacity-90"
-            style={{ lineHeight: lineHeight }}
+        {!showPlayer && (
+          <article
+            ref={articleRef}
+            className={`mx-auto w-full max-w-3xl ${textColor} ${fontFamily}`}
+            style={{
+              fontSize: `${fontSize}px`,
+              columnWidth: scrollMode === 'horizontal' ? '100vw' : 'auto',
+              columnGap: scrollMode === 'horizontal' ? '40px' : 'normal',
+              lineHeight,
+            }}
           >
-            {paragraphs.map((p, i) => {
-              const isHighlighted = highlights.some((h) => h.bookId === book.id && h.content === p && !h.isBookmark);
-              const isCurrentlyPlaying = isPlaying && i === activeParagraphIdx && ttsState.bookId === book.id;
+            {scrollMode === 'vertical' && (
+              <header className="mb-6 mt-8 text-center">
+                <h1 className="mx-auto max-w-[90%] break-words text-2xl font-bold leading-tight">
+                  {safeTitle(currentChapter?.title || book.title)}
+                </h1>
+                <div className="mx-auto mt-4 h-px w-16 bg-primary/20" />
+              </header>
+            )}
 
-              return (
-                <p
-                  key={i}
-                  className={`indent-[2em] ${isCurrentlyPlaying ? 'rounded bg-primary/10 px-1 font-medium text-primary' : ''
-                    } ${(isPlaying || showPlayer) ? 'cursor-pointer rounded px-1 transition-colors hover:bg-primary/5' : ''} ${isHighlighted ? 'border-b-2 border-primary/40 pb-1' : ''
-                    }`}
-                  onClick={(e) => {
-                    if (isPlaying || showPlayer) {
-                      e.stopPropagation();
-                      handleParagraphClick(i);
-                    } else if (isHighlighted) {
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      setRemoveHighlightCtx({
-                        text: p,
-                        x: rect.left + rect.width / 2,
-                        y: Math.max(0, rect.top - 40),
-                      });
-                      setHighlightCtx(null);
-                      e.stopPropagation();
-                    } else {
-                      const selection = window.getSelection();
-                      if (!selection || selection.toString().trim() === '') {
-                        const range = document.createRange();
-                        range.selectNodeContents(e.currentTarget);
-                        selection?.removeAllRanges();
-                        selection?.addRange(range);
+            <div className="space-y-6 whitespace-pre-wrap break-words text-justify leading-relaxed opacity-90">
+              {paragraphs.map((p, i) => {
+                const isHighlighted = highlights.some((h) => h.bookId === book.id && h.content === p && !h.isBookmark);
+                const isCurrentlyPlaying = isPlaying && i === activeParagraphIdx && ttsState.bookId === book.id;
+
+                return (
+                  <p
+                    key={i}
+                    className={`rounded px-1 indent-[2em] ${isCurrentlyPlaying ? 'bg-primary/10 font-medium text-primary' : ''
+                      } ${(isPlaying || showPlayer) ? 'cursor-pointer transition-colors hover:bg-primary/5' : ''} ${isHighlighted ? 'border-b-2 border-primary/40 pb-1' : ''
+                      }`}
+                    onClick={(e) => {
+                      if (isPlaying || showPlayer) {
+                        e.stopPropagation();
+                        handleParagraphClick(i);
+                      } else if (isHighlighted) {
                         const rect = e.currentTarget.getBoundingClientRect();
-                        setHighlightCtx({
+                        setRemoveHighlightCtx({
                           text: p,
                           x: rect.left + rect.width / 2,
                           y: Math.max(0, rect.top - 40),
                         });
-                        setRemoveHighlightCtx(null);
+                        setHighlightCtx(null);
                         e.stopPropagation();
+                      } else {
+                        const selection = window.getSelection();
+                        if (!selection || selection.toString().trim() === '') {
+                          const range = document.createRange();
+                          range.selectNodeContents(e.currentTarget);
+                          selection?.removeAllRanges();
+                          selection?.addRange(range);
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          setHighlightCtx({
+                            text: p,
+                            x: rect.left + rect.width / 2,
+                            y: Math.max(0, rect.top - 40),
+                          });
+                          setRemoveHighlightCtx(null);
+                          e.stopPropagation();
+                        }
                       }
-                    }
-                  }}
-                >
-                  {p}
-                </p>
-              );
-            })}
-          </div>
-        </article>
+                    }}
+                  >
+                    {p}
+                  </p>
+                );
+              })}
+            </div>
 
-        {scrollMode === 'vertical' && <div className="h-40 w-full flex-shrink-0" />}
+            <div className="h-24 w-full" />
+          </article>
+        )}
       </main>
 
       <AnimatePresence>
@@ -806,43 +870,14 @@ export function ReadingView() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {isUIVisible && (
-          <>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 20 }}
-              className="absolute bottom-24 left-1/2 z-40 w-[90%] max-w-md -translate-x-1/2"
-            >
-              <div className="flex items-center gap-4 rounded-full border border-primary/10 bg-surface/95 p-2 shadow-premium backdrop-blur-xl">
-                <button
-                  onClick={toggleIsPlaying}
-                  className="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-white shadow-lg transition-all hover:scale-105 active:scale-95"
-                >
-                  {isPlaying ? (
-                    <Pause size={20} fill="currentColor" />
-                  ) : (
-                    <Play size={20} className="ml-1" fill="currentColor" />
-                  )}
-                </button>
-
-                <div className="min-w-0 flex-1" onClick={handleOpenPlayer}>
-                  <p className="truncate text-xs font-bold text-primary">当前朗读: 第 {safeChapterIndex + 1} 章节</p>
-                  <p className="truncate text-[10px] text-on-surface-variant">{currentChapter?.title}</p>
-                </div>
-
-                <button onClick={handleOpenPlayer} className="p-3 text-on-surface-variant transition-colors hover:text-primary">
-                  <ListIcon size={18} />
-                </button>
-              </div>
-            </motion.div>
-
-            <motion.div
-              initial={{ y: '100%' }}
-              animate={{ y: 0 }}
-              exit={{ y: '100%' }}
-              className="absolute bottom-0 left-0 right-0 z-40 flex h-20 items-center justify-around border-t border-outline-variant/10 bg-surface/95 px-6 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] backdrop-blur"
-            >
+        {isUIVisible && !showPlayer && (
+          <motion.div
+            initial={{ y: '100%' }}
+            animate={{ y: 0 }}
+            exit={{ y: '100%' }}
+            className="fixed bottom-0 left-0 right-0 z-40 border-t border-outline-variant/10 bg-surface/95 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] backdrop-blur"
+          >
+            <div className="mx-auto flex h-20 max-w-md items-center justify-around">
               <button
                 onClick={() => setShowChapters(true)}
                 className="flex flex-col items-center gap-1 text-on-surface-variant transition-colors hover:text-primary"
@@ -875,8 +910,8 @@ export function ReadingView() {
                 <SettingsIcon size={20} />
                 <span className="text-[10px] font-bold uppercase">设置</span>
               </button>
-            </motion.div>
-          </>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
 
@@ -887,248 +922,246 @@ export function ReadingView() {
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed inset-0 z-[80] flex flex-col bg-surface px-6 py-12"
+            className="fixed inset-0 z-[80] bg-surface"
           >
-            <div className="mx-auto mb-10 flex w-full max-w-lg items-center justify-between">
-              <button onClick={() => setShowPlayer(false)} className="relative rounded-full p-2 text-on-surface transition-colors hover:bg-surface-variant">
-                <ArrowLeft size={24} className="rotate-270" />
-              </button>
+            <div className="flex h-full flex-col overflow-y-auto overscroll-contain px-4 pb-[max(24px,env(safe-area-inset-bottom))] pt-6 sm:px-6">
+              <div className="mx-auto mb-8 flex w-full max-w-lg items-center justify-between">
+                <button onClick={() => setShowPlayer(false)} className="rounded-full p-2 text-on-surface transition-colors hover:bg-surface-variant">
+                  <ArrowLeft size={24} className="rotate-270" />
+                </button>
 
-              <span className="text-sm font-bold tracking-widest text-on-surface">正在播放</span>
+                <span className="text-sm font-bold tracking-widest text-on-surface">正在播放</span>
 
-              <button className="rounded-full p-2 text-on-surface transition-colors hover:bg-surface-variant">
-                <MoreVertical size={24} />
-              </button>
-            </div>
+                <button className="rounded-full p-2 text-on-surface transition-colors hover:bg-surface-variant">
+                  <MoreVertical size={24} />
+                </button>
+              </div>
 
-            <div className="mx-auto flex w-full max-w-lg flex-1 flex-col items-center justify-center pb-10">
-              <div className="relative mb-10 flex aspect-square w-[60vw] max-w-[280px] items-center justify-center overflow-hidden rounded-2xl bg-[#0b241c] shadow-ambient">
-                {book.coverUrl ? (
-                  <img src={book.coverUrl} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="absolute inset-6 flex items-center justify-center border-2 border-primary-container bg-primary-container p-6">
-                    <span className="text-center text-xl font-bold leading-tight tracking-widest text-white opacity-80">
-                      {book.title}
-                    </span>
+              <div className="mx-auto flex w-full max-w-lg flex-col items-center">
+                <div className="relative mb-8 flex aspect-square w-[68vw] max-w-[280px] items-center justify-center overflow-hidden rounded-2xl bg-[#0b241c] shadow-ambient">
+                  {book.coverUrl ? (
+                    <img src={book.coverUrl} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="absolute inset-6 flex items-center justify-center border-2 border-primary-container bg-primary-container p-6">
+                      <span className="text-center text-xl font-bold leading-tight tracking-widest text-white opacity-80 break-words">
+                        {safeTitle(book.title)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <h2 className="mb-2 text-center text-2xl font-bold text-on-surface break-words">
+                  {safeTitle(currentChapter?.title)}
+                </h2>
+                <p className="mb-5 text-center text-sm tracking-wider text-on-surface-variant break-words">
+                  《{safeTitle(book.title)}》 - {safeTitle(book.author || '未知作者')}
+                </p>
+
+                {isMobileTtsMode && (
+                  <div className="mb-5 w-full rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3 text-sm text-primary">
+                    手机端听书功能正在完善中，当前可继续正常阅读；朗读功能请先在电脑端使用。
                   </div>
                 )}
-              </div>
 
-              <h2 className="mb-3 line-clamp-2 text-center text-2xl font-bold text-on-surface">
-                {currentChapter?.title}
-              </h2>
-              <p className="mb-4 text-sm tracking-wider text-on-surface-variant">
-                《{book.title}》- {book.author}
-              </p>
-
-              {isMobileTtsMode && (
-                <div className="mb-6 w-full rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3 text-sm text-primary">
-                  手机端听书功能正在完善中，当前可继续正常阅读；朗读功能请先在电脑端使用。
-                </div>
-              )}
-
-              <div className="group/slider mb-10 w-full">
-                <div
-                  ref={progressRef}
-                  className="relative mb-2 flex h-2 w-full cursor-pointer items-center rounded-full bg-surface-variant"
-                  onMouseDown={(e) => {
-                    setIsDraggingProgress(true);
-                    handleProgressInteraction(e);
-                  }}
-                  onTouchStart={(e) => {
-                    setIsDraggingProgress(true);
-                    handleProgressInteraction(e);
-                  }}
-                  onMouseMove={(e) => isDraggingProgress && handleProgressInteraction(e)}
-                  onTouchMove={(e) => isDraggingProgress && handleProgressInteraction(e)}
-                  onMouseUp={() => setIsDraggingProgress(false)}
-                  onMouseLeave={() => setIsDraggingProgress(false)}
-                  onTouchEnd={() => setIsDraggingProgress(false)}
-                >
+                <div className="mb-8 w-full">
                   <div
-                    className="relative h-full rounded-full bg-primary"
-                    style={{ width: `${(activeParagraphIdx / Math.max(1, paragraphs.length - 1)) * 100}%` }}
+                    ref={progressRef}
+                    className="relative mb-2 flex h-2 w-full cursor-pointer items-center rounded-full bg-surface-variant"
+                    onMouseDown={(e) => {
+                      setIsDraggingProgress(true);
+                      handleProgressInteraction(e);
+                    }}
+                    onTouchStart={(e) => {
+                      setIsDraggingProgress(true);
+                      handleProgressInteraction(e);
+                    }}
+                    onMouseMove={(e) => isDraggingProgress && handleProgressInteraction(e)}
+                    onTouchMove={(e) => isDraggingProgress && handleProgressInteraction(e)}
+                    onMouseUp={() => setIsDraggingProgress(false)}
+                    onMouseLeave={() => setIsDraggingProgress(false)}
+                    onTouchEnd={() => setIsDraggingProgress(false)}
                   >
-                    <div className="absolute right-0 top-1/2 h-5 w-5 translate-x-1/2 -translate-y-1/2 scale-0 rounded-full border-2 border-surface bg-primary shadow-lg transition-transform group-hover/slider:scale-100" />
-                  </div>
-                </div>
-
-                <div className="flex justify-between text-[10px] font-bold text-on-surface-variant">
-                  <span>P.{activeParagraphIdx + 1}</span>
-                  <span>共 {paragraphs.length} 段</span>
-                </div>
-              </div>
-
-              <div className="mb-12 flex items-center gap-6">
-                <button
-                  onClick={() =>
-                    handleProtectedTtsAction(() => {
-                      if (safeChapterIndex > 0) {
-                        setCurrentChapterIndex(safeChapterIndex - 1);
-                        setActiveParagraphIdx(0);
-                        if (isPlaying) setTimeout(() => playParagraph(0), 100);
-                      }
-                    })
-                  }
-                  className="text-on-surface-variant transition-colors hover:text-on-surface"
-                  title="上一章"
-                >
-                  <SkipBack size={24} />
-                </button>
-
-                <button
-                  onClick={() =>
-                    handleProtectedTtsAction(() => {
-                      if (activeParagraphIdx > 0) {
-                        const newIdx = activeParagraphIdx - 1;
-                        setActiveParagraphIdx(newIdx);
-                        if (isPlaying) playParagraph(newIdx);
-                      } else if (safeChapterIndex > 0) {
-                        setCurrentChapterIndex(safeChapterIndex - 1);
-                        setActiveParagraphIdx(0);
-                        if (isPlaying) setTimeout(() => playParagraph(0), 100);
-                      }
-                    })
-                  }
-                  className="text-on-surface-variant transition-colors hover:text-on-surface"
-                  title="回退上一段"
-                >
-                  <Rewind size={28} />
-                </button>
-
-                <button
-                  onClick={toggleIsPlaying}
-                  className="mx-2 flex h-20 w-20 items-center justify-center rounded-full bg-primary text-white shadow-lg transition-all hover:scale-105 active:scale-95"
-                >
-                  {isPlaying ? (
-                    <Pause size={36} fill="currentColor" />
-                  ) : (
-                    <Play size={36} className="ml-2" fill="currentColor" />
-                  )}
-                </button>
-
-                <button
-                  onClick={() =>
-                    handleProtectedTtsAction(() => {
-                      if (activeParagraphIdx < paragraphs.length - 1) {
-                        const newIdx = activeParagraphIdx + 1;
-                        setActiveParagraphIdx(newIdx);
-                        if (isPlaying) playParagraph(newIdx);
-                      } else if (safeChapterIndex < chaptersToUse.length - 1) {
-                        setCurrentChapterIndex(safeChapterIndex + 1);
-                        setActiveParagraphIdx(0);
-                        if (isPlaying) setTimeout(() => playParagraph(0), 100);
-                      }
-                    })
-                  }
-                  className="text-on-surface-variant transition-colors hover:text-on-surface"
-                  title="快进下一段"
-                >
-                  <FastForward size={28} />
-                </button>
-
-                <button
-                  onClick={() =>
-                    handleProtectedTtsAction(() => {
-                      if (safeChapterIndex < chaptersToUse.length - 1) {
-                        setCurrentChapterIndex(safeChapterIndex + 1);
-                        setActiveParagraphIdx(0);
-                        if (isPlaying) setTimeout(() => playParagraph(0), 100);
-                      }
-                    })
-                  }
-                  className="text-on-surface-variant transition-colors hover:text-on-surface"
-                  title="下一章"
-                >
-                  <SkipForward size={24} />
-                </button>
-              </div>
-
-              <div className="w-full rounded-3xl border border-outline-variant/10 bg-surface-variant/30 p-6">
-                <div className="mb-4 flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-sm font-bold text-on-surface">
-                    <Volume2 size={16} className="text-primary" />
-                    音源与倍速
-                  </div>
-
-                  <div className="flex items-center gap-1 rounded-full border border-outline-variant/20 bg-surface px-2 py-1 text-xs shadow-sm">
-                    {[0.75, 1, 1.25, 1.5, 2].map((speed) => (
-                      <button
-                        key={speed}
-                        onClick={() =>
-                          handleProtectedTtsAction(() => {
-                            ttsRateRef.current = speed;
-                            setTtsRateState(speed);
-                            if (isPlaying) playParagraph(activeParagraphIdx);
-                          })
-                        }
-                        className={`rounded-full px-2 py-0.5 font-bold transition-colors ${ttsRateState === speed
-                            ? 'bg-primary text-white'
-                            : 'text-on-surface-variant hover:text-on-surface'
-                          }`}
-                      >
-                        {speed}x
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="hide-scrollbar mb-4 flex gap-2 overflow-x-auto pb-2">
-                  {voices.map((v) => (
-                    <button
-                      key={v.name}
-                      onClick={() =>
-                        handleProtectedTtsAction(() => {
-                          setSelectedVoice(v.name);
-                          playParagraph(activeParagraphIdx);
-                        })
-                      }
-                      className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${selectedVoice === v.name
-                          ? 'bg-primary text-white shadow-sm'
-                          : 'border border-outline-variant/30 bg-surface text-on-surface-variant'
-                        }`}
+                    <div
+                      className="relative h-full rounded-full bg-primary"
+                      style={{ width: `${(activeParagraphIdx / Math.max(1, paragraphs.length - 1)) * 100}%` }}
                     >
-                      {v.name.split('-')[0].substring(0, 8)}
-                    </button>
-                  ))}
+                      <div className="absolute right-0 top-1/2 h-5 w-5 translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-surface bg-primary shadow-lg" />
+                    </div>
+                  </div>
 
-                  {voices.length === 0 && (
-                    <span className="text-xs text-on-surface-variant">
-                      {isMobileTtsMode ? '手机端暂不启用朗读音源' : '浏览器暂无可用中文音源'}
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between border-t border-outline-variant/10 pt-2">
-                  <span className="flex items-center gap-2 text-xs font-bold text-on-surface-variant">
-                    <Clock size={16} />
-                    定时睡眠
-                  </span>
-
-                  <div className="flex gap-2">
-                    {[0, 15, 30].map((mins) => (
-                      <button
-                        key={mins}
-                        onClick={() =>
-                          handleProtectedTtsAction(() => {
-                            setTtsTimerMinutes(mins);
-                          })
-                        }
-                        className={`rounded-full px-3 py-1 text-xs font-bold transition-all ${ttsTimerMinutes === mins
-                            ? 'bg-secondary-container text-on-secondary-container'
-                            : 'text-on-surface-variant hover:bg-surface-variant'
-                          }`}
-                      >
-                        {mins === 0 ? '关闭' : `${mins}分`}
-                      </button>
-                    ))}
+                  <div className="flex justify-between text-[10px] font-bold text-on-surface-variant">
+                    <span>P.{activeParagraphIdx + 1}</span>
+                    <span>共 {paragraphs.length} 段</span>
                   </div>
                 </div>
-              </div>
 
-              <div className="mt-4 flex items-center justify-center gap-1 text-xs text-on-surface-variant">
-                <MousePointerClick size={12} />
-                <span className="opacity-80">在正文点击任意段落可跳转朗读进度</span>
+                <div className="mb-8 flex items-center gap-5">
+                  <button
+                    onClick={() =>
+                      handleProtectedTtsAction(() => {
+                        if (safeChapterIndex > 0) {
+                          setCurrentChapterIndex(safeChapterIndex - 1);
+                          setActiveParagraphIdx(0);
+                          if (isPlaying) setTimeout(() => playParagraph(0), 100);
+                        }
+                      })
+                    }
+                    className="text-on-surface-variant transition-colors hover:text-on-surface"
+                    title="上一章"
+                  >
+                    <SkipBack size={24} />
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      handleProtectedTtsAction(() => {
+                        if (activeParagraphIdx > 0) {
+                          const newIdx = activeParagraphIdx - 1;
+                          setActiveParagraphIdx(newIdx);
+                          if (isPlaying) playParagraph(newIdx);
+                        } else if (safeChapterIndex > 0) {
+                          setCurrentChapterIndex(safeChapterIndex - 1);
+                          setActiveParagraphIdx(0);
+                          if (isPlaying) setTimeout(() => playParagraph(0), 100);
+                        }
+                      })
+                    }
+                    className="text-on-surface-variant transition-colors hover:text-on-surface"
+                    title="回退上一段"
+                  >
+                    <Rewind size={28} />
+                  </button>
+
+                  <button
+                    onClick={toggleIsPlaying}
+                    className="mx-2 flex h-20 w-20 items-center justify-center rounded-full bg-primary text-white shadow-lg transition-all hover:scale-105 active:scale-95"
+                  >
+                    {isPlaying ? <Pause size={36} fill="currentColor" /> : <Play size={36} className="ml-2" fill="currentColor" />}
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      handleProtectedTtsAction(() => {
+                        if (activeParagraphIdx < paragraphs.length - 1) {
+                          const newIdx = activeParagraphIdx + 1;
+                          setActiveParagraphIdx(newIdx);
+                          if (isPlaying) playParagraph(newIdx);
+                        } else if (safeChapterIndex < chaptersToUse.length - 1) {
+                          setCurrentChapterIndex(safeChapterIndex + 1);
+                          setActiveParagraphIdx(0);
+                          if (isPlaying) setTimeout(() => playParagraph(0), 100);
+                        }
+                      })
+                    }
+                    className="text-on-surface-variant transition-colors hover:text-on-surface"
+                    title="快进下一段"
+                  >
+                    <FastForward size={28} />
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      handleProtectedTtsAction(() => {
+                        if (safeChapterIndex < chaptersToUse.length - 1) {
+                          setCurrentChapterIndex(safeChapterIndex + 1);
+                          setActiveParagraphIdx(0);
+                          if (isPlaying) setTimeout(() => playParagraph(0), 100);
+                        }
+                      })
+                    }
+                    className="text-on-surface-variant transition-colors hover:text-on-surface"
+                    title="下一章"
+                  >
+                    <SkipForward size={24} />
+                  </button>
+                </div>
+
+                <div className="w-full rounded-3xl border border-outline-variant/10 bg-surface-variant/30 p-4">
+                  <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2 text-sm font-bold text-on-surface">
+                      <Volume2 size={16} className="text-primary" />
+                      音源与倍速
+                    </div>
+
+                    <div className="hide-scrollbar flex items-center gap-1 overflow-x-auto rounded-full border border-outline-variant/20 bg-surface px-2 py-1 text-xs shadow-sm">
+                      {[0.75, 1, 1.25, 1.5, 2].map((speed) => (
+                        <button
+                          key={speed}
+                          onClick={() =>
+                            handleProtectedTtsAction(() => {
+                              ttsRateRef.current = speed;
+                              setTtsRateState(speed);
+                              if (isPlaying) playParagraph(activeParagraphIdx);
+                            })
+                          }
+                          className={`rounded-full px-2 py-0.5 font-bold transition-colors ${ttsRateState === speed
+                              ? 'bg-primary text-white'
+                              : 'text-on-surface-variant hover:text-on-surface'
+                            }`}
+                        >
+                          {speed}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="hide-scrollbar mb-4 flex gap-2 overflow-x-auto pb-2">
+                    {voices.map((v) => (
+                      <button
+                        key={v.name}
+                        onClick={() =>
+                          handleProtectedTtsAction(() => {
+                            setSelectedVoice(v.name);
+                            playParagraph(activeParagraphIdx);
+                          })
+                        }
+                        className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${selectedVoice === v.name
+                            ? 'bg-primary text-white shadow-sm'
+                            : 'border border-outline-variant/30 bg-surface text-on-surface-variant'
+                          }`}
+                      >
+                        {v.name.split('-')[0].substring(0, 8)}
+                      </button>
+                    ))}
+
+                    {voices.length === 0 && (
+                      <span className="text-xs text-on-surface-variant">
+                        {isMobileTtsMode ? '手机端暂不启用朗读音源' : '浏览器暂无可用中文音源'}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-outline-variant/10 pt-2">
+                    <span className="flex items-center gap-2 text-xs font-bold text-on-surface-variant">
+                      <Clock size={16} />
+                      定时睡眠
+                    </span>
+
+                    <div className="flex gap-2">
+                      {[0, 15, 30].map((mins) => (
+                        <button
+                          key={mins}
+                          onClick={() =>
+                            handleProtectedTtsAction(() => {
+                              setTtsTimerMinutes(mins);
+                            })
+                          }
+                          className={`rounded-full px-3 py-1 text-xs font-bold transition-all ${ttsTimerMinutes === mins
+                              ? 'bg-secondary-container text-on-secondary-container'
+                              : 'text-on-surface-variant hover:bg-surface-variant'
+                            }`}
+                        >
+                          {mins === 0 ? '关闭' : `${mins}分`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-center gap-1 pb-4 text-center text-xs text-on-surface-variant">
+                  <MousePointerClick size={12} />
+                  <span className="opacity-80">在正文点击任意段落可跳转朗读进度</span>
+                </div>
               </div>
             </div>
           </motion.div>
@@ -1150,14 +1183,14 @@ export function ReadingView() {
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed bottom-0 left-0 top-0 z-[70] flex w-80 flex-col bg-surface p-8 shadow-2xl"
+              className="fixed bottom-0 left-0 top-0 z-[70] flex w-[85vw] max-w-80 flex-col bg-surface p-6 shadow-2xl"
             >
               <h2 className="mb-2 text-2xl font-bold text-primary">目录</h2>
-              <p className="mb-8 text-xs font-medium uppercase tracking-widest text-on-surface-variant">
-                {book.title}
+              <p className="mb-8 break-words text-xs font-medium uppercase tracking-widest text-on-surface-variant">
+                {safeTitle(book.title)}
               </p>
 
-              <div className="hide-scrollbar flex-1 space-y-2 overflow-y-auto pr-2">
+              <div className="hide-scrollbar flex-1 space-y-2 overflow-y-auto pr-1">
                 {chaptersToUse.map((chap, idx) => {
                   const isPast = idx < safeChapterIndex;
                   const isCurrent = idx === safeChapterIndex;
@@ -1179,11 +1212,8 @@ export function ReadingView() {
                         }`}
                     >
                       <div className="flex w-[80%] flex-col gap-1">
-                        <span
-                          className={`truncate text-sm ${isCurrent ? 'font-bold' : isPast ? 'font-normal' : 'font-medium'
-                            }`}
-                        >
-                          {chap.title}
+                        <span className={`truncate text-sm ${isCurrent ? 'font-bold' : isPast ? 'font-normal' : 'font-medium'}`}>
+                          {safeTitle(chap.title)}
                         </span>
 
                         {isCurrent && (
@@ -1230,15 +1260,13 @@ export function ReadingView() {
               exit={{ opacity: 0 }}
               className="fixed inset-0 z-[60] bg-black/20 backdrop-blur-[1px]"
             />
-
             <motion.div
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
-              className="fixed bottom-0 left-0 right-0 z-[70] max-h-[90vh] overflow-y-auto rounded-t-3xl bg-surface px-8 pb-12 pt-4 shadow-2xl"
+              className="fixed bottom-0 left-0 right-0 z-[70] max-h-[90vh] overflow-y-auto rounded-t-3xl bg-surface px-6 pb-12 pt-4 shadow-2xl"
             >
               <div className="mx-auto mb-6 h-1 w-12 flex-shrink-0 rounded-full bg-outline-variant/30" />
-
               <div className="mb-8 flex items-center justify-between">
                 <h2 className="text-xl font-bold text-on-surface">阅读设置</h2>
                 <button onClick={() => setShowSettings(false)} className="p-2 text-on-surface-variant">
@@ -1354,7 +1382,7 @@ export function ReadingView() {
                     <div className="relative h-1 flex-1 rounded-full bg-surface-variant">
                       <div
                         className="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border-2 border-surface bg-primary shadow-lg"
-                        style={{ left: `${((fontSize - 12) / 24) * 100}%` }}
+                        style={{ left: `${((fontSize - 14) / 18) * 100}%` }}
                       />
                     </div>
 
@@ -1373,7 +1401,7 @@ export function ReadingView() {
                   </h3>
 
                   <div className="grid grid-cols-4 gap-4">
-                    {[1.4, 1.6, 1.8, 2.0].map((h) => (
+                    {[1.5, 1.7, 1.9, 2.1].map((h) => (
                       <button
                         key={h}
                         onClick={() => setLineHeight(h)}

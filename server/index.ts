@@ -24,7 +24,7 @@ const appOrigin = process.env.APP_ORIGIN || 'http://localhost:3000';
 app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin: appOrigin, credentials: false }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '30mb' }));
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
