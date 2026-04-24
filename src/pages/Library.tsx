@@ -188,3 +188,5 @@ export function Library() {
     </motion.div>
   );
 }
+
+export default Library;

@@ -19,34 +19,37 @@ import { useStore } from './store';
 function AppContent() {
   const { theme, followSystemTheme } = useStore();
   const location = useLocation();
-  const isReadingMode = location.pathname.startsWith('/reading') || location.pathname.startsWith('/auth') || location.pathname === '/check-in';
+  const isReadingMode =
+    location.pathname.startsWith('/reading') ||
+    location.pathname.startsWith('/auth') ||
+    location.pathname === '/check-in';
 
   const themeColors = {
     day: {
       bg: '#FCF9F8',
       text: '#1B1C1C',
       surface: '#FFFFFF',
-      surfaceVariant: '#E4E2E1'
+      surfaceVariant: '#E4E2E1',
     },
     eye: {
       bg: '#F8F5EE',
       text: '#2C2C2C',
       surface: '#FCFAF5',
-      surfaceVariant: '#EBE9E2'
+      surfaceVariant: '#EBE9E2',
     },
     night: {
       bg: '#1B1C1C',
       text: '#DCD9D9',
       surface: '#252626',
-      surfaceVariant: '#313333'
-    }
+      surfaceVariant: '#313333',
+    },
   };
 
   const currentColors = followSystemTheme ? themeColors[theme] : themeColors.day;
 
   return (
-    <div 
-      className={`flex flex-col min-h-screen relative transition-colors duration-500`}
+    <div
+      className="relative flex min-h-screen flex-col overflow-x-hidden transition-colors duration-500"
       style={{
         backgroundColor: currentColors.bg,
         color: currentColors.text,
@@ -58,10 +61,10 @@ function AppContent() {
       }}
     >
       {!isReadingMode && <TopAppBar />}
-      
-      <main className={`flex-grow ${!isReadingMode ? 'pt-16 pb-24' : ''}`}>
+
+      <main className={`min-h-0 flex-grow ${!isReadingMode ? 'pt-16 pb-24' : ''}`}>
         <AnimatePresence mode="wait">
-          <Routes location={location}>
+          <Routes location={location} key={location.pathname}>
             <Route path="/" element={<Bookshelf />} />
             <Route path="/explore" element={<Explore />} />
             <Route path="/reading/:id" element={<ReadingView />} />

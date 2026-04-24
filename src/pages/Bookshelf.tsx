@@ -6,7 +6,7 @@ import type { Book, Chapter } from '../types';
 
 type ViewMode = 'grid' | 'list';
 
-const Bookshelf: React.FC = () => {
+export const Bookshelf: React.FC = () => {
   const navigate = useNavigate();
   const { books, addBook } = useStore();
 
